@@ -1,4 +1,4 @@
-"""Yaxanal Sunu Mbaaye – version TEST simplifiée : zone des Niayes, cultures oignon, piment et niébé, par saison.
+"""Sunu Mbaaye – version TEST simplifiée : zone des Niayes, cultures oignon, piment et niébé, par saison.
 Lancer :  streamlit run app.py
 Code généré avec l'aide de Claude (Anthropic) et testé par l'équipe. Données : NASA POWER (pluie, températures).
 """
@@ -18,7 +18,7 @@ try:
 except Exception:
     components = None
 
-st.set_page_config(page_title="Yaxanal Sunu Mbaaye – Niayes", page_icon="🌱", layout="centered")
+st.set_page_config(page_title="Sunu Mbaaye – Niayes", page_icon="🌱", layout="centered")
 if components is not None:  # empêche la traduction automatique du navigateur
     try:
         components.html("""<script>
@@ -70,6 +70,36 @@ h1{font-size:2.1rem !important}
 .st-key-topbar [data-testid="stPopover"] button{min-height:52px;min-width:64px;padding:0 10px !important;border-radius:16px;border:2px solid var(--bd);background:var(--card);padding:0}
 .st-key-topbar [data-testid="stPopover"] button p{font-size:1.4rem}
 [data-testid="stPopoverBody"]{background:var(--card) !important;border:2px solid var(--bd);border-radius:18px}
+
+/* Boutons primaires (Suivant, Voir mon conseil) */
+button[kind="primary"], [data-testid="stBaseButton-primary"] {
+    background: var(--ac) !important;
+    border: none !important;
+    border-radius: 18px !important;
+    min-height: 56px !important;
+    width: 100% !important;
+}
+button[kind="primary"] p, [data-testid="stBaseButton-primary"] p,
+[data-testid="stBaseButton-primary"] span {
+    font-size: 1.25rem !important;
+    font-weight: 800 !important;
+    color: #ffffff !important;
+}
+
+/* Boutons secondaires (Retour / Dellu) */
+button[kind="secondary"], [data-testid="stBaseButton-secondary"] {
+    min-height: 56px !important;
+    border-radius: 18px !important;
+    border: 2px solid var(--bd) !important;
+    background: var(--card) !important;
+    width: 100% !important;
+}
+button[kind="secondary"] p, [data-testid="stBaseButton-secondary"] p,
+[data-testid="stBaseButton-secondary"] span {
+    font-size: 1.1rem !important;
+    font-weight: 700 !important;
+    color: var(--tx) !important;
+}
 """
 
 
@@ -429,23 +459,55 @@ def build_context(sidx, usual, water_key, prio_key, suit, plans):
 # ---------------------------------------------------------------------------------------------
 # INTERFACE
 # ---------------------------------------------------------------------------------------------
-st.markdown(f'<div class="hero"><div class="t">🌱 Yaxanal Sunu Mbaaye</div><div class="s">{T("sub")}</div></div>',
+if "step" not in st.session_state:
+    st.session_state.step = 1
+
+st.markdown(f'<div class="hero"><div class="t">🌱  Sunu Mbaaye</div><div class="s">{T("sub")}</div></div>',
             unsafe_allow_html=True)
 now_idx = ORDER.index(month_season(dt.date.today().month))
 st.markdown(f'<div class="chip">{T("chip").format(s=SNAME[LANG][ORDER[now_idx]])}</div>', unsafe_allow_html=True)
 
-with st.form("questions"):
-    sidx = st.radio(T("q1"), range(3), index=now_idx, format_func=lambda i: SLAB[LANG][ORDER[i]], key="q_season")
-    usual = st.radio(T("q2"), MY, format_func=lab, horizontal=True, key="q_crop")
-    water = st.radio(T("q3"), list(WATER_BUDGET), format_func=lambda k: WLAB[LANG][k], key="q_water")
-    prio = st.radio(T("q4"), PRIO_KEYS, format_func=lambda k: PLAB[LANG][k], key="q_prio")
-    go = st.form_submit_button(T("btn"), type="primary")
-if go:
-    st.session_state["inp"] = (sidx, usual, water, prio)
-    st.session_state["chat"] = []
+# Navigation logic
+def set_step(step):
+    st.session_state.step = step
 
-if "inp" in st.session_state:
-    sidx, usual, water, prio = st.session_state["inp"]
+if st.session_state.step == 1:
+    st.radio(T("q1"), range(3), index=now_idx, format_func=lambda i: SLAB[LANG][ORDER[i]], key="q_season")
+    st.button("Suivant / Ñëwël 👉", on_click=set_step, args=(2,), type="primary", use_container_width=True)
+
+elif st.session_state.step == 2:
+    st.radio(T("q2"), MY, format_func=lab, horizontal=False, key="q_crop")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.button("⬅️ Retour / Dellu", on_click=set_step, args=(1,), use_container_width=True)
+    with col2:
+        st.button("Suivant / Ñëwël 👉", on_click=set_step, args=(3,), type="primary", use_container_width=True)
+
+elif st.session_state.step == 3:
+    st.radio(T("q3"), list(WATER_BUDGET), format_func=lambda k: WLAB[LANG][k], key="q_water")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.button("⬅️ Retour / Dellu", on_click=set_step, args=(2,), use_container_width=True)
+    with col2:
+        st.button("Suivant / Ñëwël 👉", on_click=set_step, args=(4,), type="primary", use_container_width=True)
+
+elif st.session_state.step == 4:
+    st.radio(T("q4"), PRIO_KEYS, format_func=lambda k: PLAB[LANG][k], key="q_prio")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.button("⬅️ Retour / Dellu", on_click=set_step, args=(3,), use_container_width=True)
+    with col2:
+        st.button(T("btn"), on_click=set_step, args=(5,), type="primary", use_container_width=True)
+
+elif st.session_state.step == 5:
+    if st.button("🔄 Modifier mes réponses / Changer samay tontu", on_click=set_step, args=(1,), use_container_width=True):
+        st.rerun()
+
+    sidx = st.session_state.get("q_season", now_idx)
+    usual = st.session_state.get("q_crop", MY[0])
+    water = st.session_state.get("q_water", list(WATER_BUDGET)[0])
+    prio = st.session_state.get("q_prio", PRIO_KEYS[0])
+    
     budget = WATER_BUDGET[water]
     try:
         with st.spinner("Nous consultons 20 ans de données de la NASA… (la première fois, cela peut durer une minute)"):
