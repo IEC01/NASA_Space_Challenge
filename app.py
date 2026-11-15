@@ -1,407 +1,535 @@
-"""AgriSpace Dakar – Assistant de rotation culturale (NASA Space Apps)
-Lancer :  pip install -r requirements.txt  &&  streamlit run app.py
-Données : NASA POWER (https://power.larc.nasa.gov/docs/services/api/)
-  PRECTOTCORR = pluie corrigée (mm/j, basée sur GPM IMERG/MERRA-2)
-  T2M         = température à 2 m (°C)
-  GWETROOT    = humidité de la zone racinaire (0-1, MERRA-2)
+"""Yaxanal Sunu Mbaaye – version TEST simplifiée : zone des Niayes, cultures oignon, piment et niébé, par saison.
+Lancer :  streamlit run app.py
+Code généré avec l'aide de Claude (Anthropic) et testé par l'équipe. Données : NASA POWER (pluie, températures).
 """
+import datetime as dt
 import itertools
 import math
-from concurrent.futures import ThreadPoolExecutor
-import folium
+import os
+import pathlib
+import time
+
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
 try:
     import streamlit.components.v1 as components
-except Exception:  # API retirée dans une future version : on s'en passe
+except Exception:
     components = None
-from streamlit_folium import st_folium
 
-st.set_page_config(page_title="Yaxanal Sunu Mbaaye ", page_icon="🌱", layout="wide")
-
-# Empêche la traduction automatique du navigateur (ex. « parcelle » -> « colis »)
-if components is not None:
+st.set_page_config(page_title="Yaxanal Sunu Mbaaye – Niayes", page_icon="🌱", layout="centered")
+if components is not None:  # empêche la traduction automatique du navigateur
     try:
         components.html("""<script>
         const d = window.parent.document;
         d.documentElement.lang = 'fr'; d.documentElement.setAttribute('translate', 'no');
-        if (!d.querySelector('meta[name=google]')) {
-          const m = d.createElement('meta'); m.name = 'google'; m.content = 'notranslate'; d.head.appendChild(m);
-        }
         </script>""", height=0)
     except Exception:
         pass
+LIGHT = dict(bg="#f4f7f1", card="#ffffff", tx="#1b2a1f", mut="#5d6b60", ac="#1f8a4c", ac2="#e6f4ec", bd="#d9e2d6",
+             okbg="#d8f3e3", oktx="#0f5a31", midbg="#fdebc8", midtx="#7a4a00", badbg="#fbdada", badtx="#8a1c1c")
+DARK = dict(bg="#0f1a14", card="#17251c", tx="#e8efe9", mut="#9bb0a1", ac="#3ecf7a", ac2="#1f3326", bd="#2c3d32",
+            okbg="#1c4a31", oktx="#aef0c9", midbg="#4a3a14", midtx="#ffd98a", badbg="#4d2222", badtx="#ffb4b4")
+CSS = """
+.card{background:var(--card);border:2px solid var(--bd);border-radius:22px;padding:18px 20px;margin:14px 0}
+.card.rec{border-color:var(--ac);box-shadow:0 6px 20px rgba(31,138,76,.20)}
+.ch{font-weight:800;font-size:1.15rem;color:var(--ac);margin-bottom:8px}
+.big{font-size:1.7rem;font-weight:800;margin:6px 0 10px;color:var(--tx)}
+.badge{display:inline-block;padding:8px 14px;border-radius:14px;font-weight:700;margin:6px 0}
+.badge.ok{background:var(--okbg);color:var(--oktx)} .badge.mid{background:var(--midbg);color:var(--midtx)}
+.badge.bad{background:var(--badbg);color:var(--badtx)}
+.oth{margin-top:8px;color:var(--mut);font-size:1rem}
+.tiles{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 12px}
+.tile{flex:1 1 90px;border:2px solid var(--bd);border-radius:18px;padding:8px 4px;text-align:center;background:var(--ac2)}
+.tile .sn{font-size:.8rem;color:var(--mut);font-weight:700}
+.tile .ic{font-size:2.2rem;line-height:1.2}
+.tile .cn{font-weight:800;font-size:1rem;color:var(--tx)}
+.why{margin:6px 0 0 0;padding-left:20px;line-height:1.7;color:var(--tx)}
+.ribbon{background:var(--ac);color:#fff !important;border-radius:999px;padding:2px 10px;font-size:.85rem;margin-left:8px}
+.note{color:var(--mut);font-size:.95rem;margin-bottom:6px}
+.hero{background:linear-gradient(135deg,#1f8a4c,#35b872);color:#fff;border-radius:26px;padding:22px 24px;margin:6px 0 14px}
+.hero .t{font-size:2rem;font-weight:900;color:#fff} .hero .s{font-size:1.1rem;margin-top:4px;color:#fff}
+.chip{display:inline-block;background:var(--ac2);color:var(--ac);border-radius:999px;padding:6px 14px;font-weight:700;margin:4px 0 10px}
+[data-testid="stRadio"] label p{font-size:1.15rem}
+[data-testid="stRadio"] > label p{font-weight:800;font-size:1.3rem}
+[data-testid="stRadio"] [role="radiogroup"]{gap:10px}
+[data-testid="stRadioOption"],[data-baseweb="radio"]{background:var(--card);border:2px solid var(--bd);border-radius:16px;padding:10px 16px;margin:0 !important}
+[data-testid="stRadioOption"][data-selected="true"],[data-baseweb="radio"]:has(input:checked){border-color:var(--ac);background:var(--ac2)}
+[data-testid="stRadioOption"] > div > div:first-child,[data-baseweb="radio"] > div:first-child{display:none}
+[data-testid="stForm"]{border:2px solid var(--bd);border-radius:24px;background:var(--card);padding:18px}
+[data-testid="stFormSubmitButton"]{width:100%}
+[data-testid="stForm"] button{background:var(--ac) !important;border:none !important;border-radius:18px !important;padding:.9rem 1rem !important;width:100% !important}
+[data-testid="stForm"] button p{font-size:1.4rem !important;font-weight:800 !important;color:#fff !important}
+[data-testid="stExpander"] details{background:var(--card);border:2px solid var(--bd);border-radius:18px}
+[data-testid="stCaptionContainer"]{color:var(--mut)}
+h1{font-size:2.1rem !important}
+.st-key-topbar [data-testid="stHorizontalBlock"]{flex-wrap:nowrap !important;align-items:center;gap:8px}
+.st-key-topbar [data-testid="stColumn"]{min-width:0 !important}
+.st-key-topbar [data-testid="stColumn"]:not(:first-child){flex:0 0 auto !important;width:auto !important}
+.st-key-topbar [data-testid="stPopover"] button{min-height:52px;min-width:64px;padding:0 10px !important;border-radius:16px;border:2px solid var(--bd);background:var(--card);padding:0}
+.st-key-topbar [data-testid="stPopover"] button p{font-size:1.4rem}
+[data-testid="stPopoverBody"]{background:var(--card) !important;border:2px solid var(--bd);border-radius:18px}
+"""
 
-ZONES = {  # lat, lon, solutions de sol, valeurs de repli (pluie, T, humidité, NDVI) si l'API est indisponible
-    "Niayes (maraîchage)": (14.85, -17.20, ["Sableux"], (350, 26, .22, .45)),
-    "Bassin arachidier (Kaolack)": (14.15, -16.07, ["Sableux", "Sablo-argileux"], (600, 28, .18, .38)),
-    "Vallée du fleuve (Podor)": (16.65, -14.96, ["Argileux", "Sablo-argileux"], (250, 30, .20, .35)),
-    "Sénégal oriental (Tambacounda)": (13.77, -13.67, ["Sablo-argileux", "Argileux"], (850, 29, .25, .55)),
-    "Casamance (Ziguinchor)": (12.56, -16.27, ["Sablo-argileux", "Argileux"], (1100, 27, .32, .68)),
+
+def theme_css(mode):
+    v = lambda d: ";".join(f"--{k}:{x}" for k, x in d.items())
+    if mode == "Auto":
+        return f":root{{{v(LIGHT)}}}@media (prefers-color-scheme: dark){{:root{{{v(DARK)}}}}}" + CSS
+    force = (".stApp{background:var(--bg)} [data-testid='stHeader']{background:transparent} "
+             ".stApp, .stApp p, .stApp label, .stApp li, .stApp h1, .stApp h2, .stApp h3, .stApp span{color:var(--tx)} ")
+    return f":root{{{v(DARK if mode == 'Sombre' else LIGHT)}}}" + force + CSS
+
+
+MODE_ICON = {"Auto": "🌓", "Clair": "☀️", "Sombre": "🌙"}
+MODE_LABEL = {"Auto": "🌓 Auto (selon l’appareil)", "Clair": "☀️ Clair", "Sombre": "🌙 Sombre"}
+LANG_CODE = {"Français": "FR", "Wolof": "WO"}
+mode = st.session_state.get("mode", "Auto")  # lus avant les widgets pour que les boutons montrent le choix en cours
+lang = st.session_state.get("lang", "Français")
+with st.container(key="topbar"):
+    _sp, _cl, _c = st.columns([4, 1, 1])
+    with _cl:
+        with st.popover(f"🌐 {LANG_CODE[lang]}", help="Langue / Làkk"):
+            lang = st.radio("Langue", list(LANG_CODE), key="lang")
+    LANG = lang
+    with _c:
+        with st.popover(MODE_ICON[mode], help="Mode d’affichage : auto, clair ou sombre"):
+            mode = st.radio("Mode d’affichage", list(MODE_ICON), format_func=MODE_LABEL.get, key="mode")
+st.markdown(f"<style>{theme_css(mode)}</style>", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------------------------
+# DONNÉES DE RÉFÉRENCE (ordres de grandeur ESTIMÉS, à valider avec un technicien agricole)
+# ---------------------------------------------------------------------------------------------
+NIAYES = (14.85, -17.20)
+YEARS = list(range(2006, 2026))
+MY = ("Oignon", "Piment", "Niébé")
+ICON = {"Oignon": "🧅", "Piment": "🌶️", "Niébé": "🫘"}
+INFO = {  # revenu, azote (+ fixe / - épuise), matière organique, besoin en eau (mm)
+    "Oignon": dict(inc=.9, n=-.8, org=.3, need=500),
+    "Piment": dict(inc=.8, n=-.6, org=.3, need=600),
+    "Niébé": dict(inc=.5, n=1.0, org=.7, need=300),
 }
-SOL_F = {"Sableux": .85, "Sablo-argileux": 1.0, "Argileux": 1.1}
-CROPS = {  # famille, besoin eau (mm), azote, tolérance sécheresse, revenu, matière organique
-    "Mil": ("Céréale", 350, -.5, .9, .4, .5), "Sorgho": ("Céréale", 400, -.5, .85, .4, .5),
-    "Maïs": ("Céréale", 550, -1, .4, .6, .6), "Arachide": ("Légumineuse", 450, .8, .6, .7, .6),
-    "Niébé": ("Légumineuse", 300, 1, .9, .5, .7), "Sésame": ("Oléagineux", 350, -.2, .8, .7, .4),
-    "Oignon": ("Maraîchère", 500, -.8, .3, .9, .3),
+# durée du cycle (j), Kc initial / milieu / fin, profondeur racinaire (m), Ky (sensibilité du rendement à l'eau)
+CROP_FAO = {"Oignon": (120, .70, 1.05, .75, .5, 1.1), "Piment": (120, .60, 1.05, .90, .7, 1.1),
+            "Niébé": (70, .40, 1.05, .60, .8, .8)}
+# températures moyennes (°C) : (minimum, début de l'optimum, fin de l'optimum, maximum)
+CROP_T = {"Oignon": (6, 13, 24, 32), "Piment": (10, 20, 30, 36), "Niébé": (12, 22, 32, 40)}
+TAW = 80  # eau utile du sol sableux (mm par m)
+SEASONS = {  # fenêtre simulée (mois, jour), décalage d'année de fin, jours avant le semis, humidité initiale
+    "Hivernage": dict(label="🌧️ Hivernage (juillet à octobre)", start=(6, 1), end=(11, 30), yoff=0, plant=30, dep0=.9),
+    "Saison fraîche": dict(label="❄️ Saison fraîche (novembre à février)", start=(11, 1), end=(3, 5), yoff=1, plant=0, dep0=.4),
+    "Saison chaude": dict(label="☀️ Saison chaude (mars à juin)", start=(3, 1), end=(7, 5), yoff=0, plant=0, dep0=.8),
 }
-
-
-@st.cache_data(ttl=86400, show_spinner="Récupération des données NASA POWER…")
-def nasa_climato(lat, lon, years=(2023, 2024, 2025)):
-    """Moyenne de la saison des pluies (juin-octobre) sur plusieurs années."""
-    rows = []
-    for y in years:
-        r = requests.get(
-            "https://power.larc.nasa.gov/api/temporal/daily/point",
-            params=dict(parameters="PRECTOTCORR,T2M,GWETROOT", community="AG",
-                        latitude=lat, longitude=lon, start=f"{y}0601", end=f"{y}1031", format="JSON"),
-            timeout=60)
-        r.raise_for_status()
-        p = r.json()["properties"]["parameter"]
-        df = pd.DataFrame(p).replace(-999, pd.NA).dropna()
-        rows.append((df.PRECTOTCORR.sum(), df.T2M.mean(), df.GWETROOT.mean()))
-    d = pd.DataFrame(rows, columns=["rain", "temp", "sm"])
-    return d.mean().to_dict(), d
-
-
-ORNL = "https://modis.ornl.gov/rst/api/v1/MOD13Q1"
-
-
-@st.cache_data(ttl=86400, show_spinner="Récupération du NDVI MODIS…")
-def nasa_ndvi(lat, lon, years=(2023, 2024, 2025)):
-    """NDVI MODIS (MOD13Q1, 250 m, composites de 16 jours), saison juin-octobre.
-    Retourne (série temporelle, moyenne par année)."""
-    base = dict(latitude=lat, longitude=lon)
-    dates = requests.get(f"{ORNL}/dates", params=base, timeout=60).json()["dates"]
-    recs = []
-    for y in years:
-        sel = [d["modis_date"] for d in dates
-               if f"{y}-06-01" <= d["calendar_date"] <= f"{y}-10-31"]
-        for i in range(0, len(sel), 10):  # l'API limite à 10 pas de temps par requête
-            chunk = sel[i:i + 10]
-            r = requests.get(f"{ORNL}/subset", params=dict(
-                base, band="250m_16_days_NDVI", startDate=chunk[0], endDate=chunk[-1],
-                kmAboveBelow=0, kmLeftRight=0), timeout=60)
-            r.raise_for_status()
-            for e in r.json()["subset"]:
-                v = e["data"][0]
-                if v > -2000:  # -3000 = valeur manquante
-                    recs.append((pd.to_datetime(e["calendar_date"]), v / 10000))
-    ts = pd.DataFrame(recs, columns=["date", "NDVI"]).set_index("date").sort_index()
-    return ts, ts.groupby(ts.index.year).NDVI.mean()
-
-
-# ---------------------------------------------------------------------------
-# REJEU SUR 20 ANS : bilan hydrique journalier inspiré de FAO-56 (ET0 de Hargreaves-Samani,
-# coefficient cultural Kc, stress hydrique Ks) et réponse du rendement à l'eau (FAO-33, Ky).
-# Les paramètres ci-dessous sont des ordres de grandeur à valider avec des agronomes.
-# ---------------------------------------------------------------------------
-YEARS = list(range(2006, 2026))  # 20 saisons des pluies
-# durée du cycle (j), Kc initial, Kc milieu, Kc fin, profondeur racinaire (m), Ky
-CROP_FAO = {
-    "Mil": (90, .30, 1.00, .30, 1.0, .8), "Sorgho": (110, .30, 1.00, .55, 1.2, .9),
-    "Maïs": (100, .30, 1.20, .60, 1.0, 1.25), "Arachide": (110, .40, 1.15, .60, .6, .7),
-    "Niébé": (70, .40, 1.05, .60, .8, .8), "Sésame": (90, .35, 1.10, .25, 1.0, .8),
-    "Oignon": (120, .70, 1.05, .75, .5, 1.1),
+ORDER = list(SEASONS)
+PRIO_KEYS = ("Revenu", "Eau", "Sol", "Résilience")
+WATER_BUDGET = {"Oui": 1e9, "Peu": 150.0, "Non": 0.0}  # mm d'arrosage par saison
+PRIO_FR = {"Revenu": "gagner plus d’argent", "Eau": "économiser l’eau", "Sol": "garder la terre en bonne santé",
+           "Résilience": "mieux résister aux années sèches"}
+WATER_FR = {"Oui": "oui, assez d’eau", "Peu": "un peu d’eau seulement", "Non": "non, seulement la pluie"}
+# TEXTES WOLOF = PREMIÈRE VERSION, à faire relire par un locuteur wolof avant usage auprès des producteurs.
+TXT = {
+    "Français": dict(
+        sub="Quelle culture planter, et quand ? · Zone des Niayes · version test", chip="📅 Nous sommes en {s}",
+        q1="1. Pour quelle saison voulez-vous planter ?", q2="2. Que cultivez-vous le plus souvent ?",
+        q3="3. Avez-vous de l’eau pour arroser (puits, forage, goutte-à-goutte) ?",
+        q4="4. Qu’est-ce qui compte le plus pour vous ?", btn="👉 Voir mon conseil",
+        h1="1. Quelle culture en priorité ?", h2="2. Votre plan pour les 3 prochaines saisons", prio="Priorité",
+        wins="a bien réussi {ok} fois sur {n}", pwins="aurait bien marché {ok} fois sur {n}", rec="⭐ Recommandé",
+        today="Ce que vous faites aujourd’hui", c1="Notre conseil n° 1", c2="Notre conseil n° 2",
+        assume="Nous supposons que vous cultivez la même culture à chaque saison.",
+        ok="✅ Solide", mid="🟠 Moyen", bad="🔴 Fragile", others="Voir les autres saisons de l’année",
+        disc="Ce conseil est une aide. Il ne remplace pas l’avis de votre conseiller agricole : parlez-en avec lui, "
+             "surtout pour les prix du marché, les maladies et les semences.",
+        tech="Pour le conseiller agricole : détails techniques", ask_h="🗣️ Yaxanal, l’assistante (répond en wolof)",
+        q_explain="Explique-moi mon conseil", q_why="Pourquoi ces cultures ?",
+        ph="Écrivez votre question (en wolof ou en français)…", wait="Yaxanal réfléchit…"),
+    "Wolof": dict(
+        sub="Lan lañuy ji, ak kañ ? · Niayes · jéem", chip="📅 Léegi nekk nanu ci {s}",
+        q1="1. Ci ban jamono nga bëgg a ji ?", q2="2. Lan ngay gën a ji ?",
+        q3="3. Am nga ndox ngir ndoxal sa tool ? (pus, forage, goutte-à-goutte)",
+        q4="4. Lan moo gën a am solo ci yaw ?", btn="👉 Wone ma ndigal bi",
+        h1="1. Lan moo gën a baax ?", h2="2. Sa pexe ngir 3 jamono yu ñëw yi", prio="Jëkkal",
+        wins="baax na {ok} yoon ci {n} at", pwins="dafa baax woon {ok} yoon ci {n} at", rec="⭐ Ndigal bu baax",
+        today="Li ngay def tey", c1="Sunu ndigal bu njëkk", c2="Sunu ndigal bu ñaareel",
+        assume="Danuy jàpp ne yaa ngi ji li ngay def tey ci jamono yépp.",
+        ok="✅ Baax na torop", mid="🟠 Baax na tuuti", bad="🔴 Baaxul", others="Seetal yeneen jamono yi ci at mi",
+        disc="Ndimbal rekk la. Bul fàtte laaj sa conseiller agricole, rawatina ci njëg ak feebar yi.",
+        tech="Ngir conseiller agricole bi : xibaar yu teknik", ask_h="🗣️ Laaleel Yaxanal (dafay wax Wolof)",
+        q_explain="Leeral ma ndigal bi", q_why="Lu tax ?", ph="Bind sa laaj fii…", wait="Yaxanal mi ngi xalaat…"),
 }
-TAW_M = {"Sableux": 80, "Sablo-argileux": 120, "Argileux": 160}  # eau utile du sol, mm par m
-PLANT_OFFSET = {"15 juin": 14, "1er juillet": 30, "15 juillet": 44}  # jours après le 1er juin
+CROP_NAME = {"Français": {c: c for c in MY}, "Wolof": {"Oignon": "Soble", "Piment": "Kaani", "Niébé": "Ñebbe"}}
+SLAB = {"Français": {s: SEASONS[s]["label"] for s in SEASONS},
+        "Wolof": {"Hivernage": "🌧️ Nawet (juillet ba octobre)", "Saison fraîche": "❄️ Jamono bu sedd (novembre ba février)",
+                  "Saison chaude": "☀️ Jamono bu tàng (mars ba juin)"}}
+SSHORT = {"Français": {"Hivernage": "🌧️ Hivernage", "Saison fraîche": "❄️ Saison fraîche", "Saison chaude": "☀️ Saison chaude"},
+          "Wolof": {"Hivernage": "🌧️ Nawet", "Saison fraîche": "❄️ Sedd", "Saison chaude": "☀️ Tàng"}}
+SNAME = {"Français": {"Hivernage": "hivernage", "Saison fraîche": "saison fraîche", "Saison chaude": "saison chaude"},
+         "Wolof": {"Hivernage": "nawet", "Saison fraîche": "jamono bu sedd", "Saison chaude": "jamono bu tàng"}}
+WLAB = {"Français": {"Oui": "Oui, j’en ai assez", "Peu": "Un peu seulement", "Non": "Non, seulement la pluie"},
+        "Wolof": {"Oui": "Waaw, am naa ndox bu doy", "Peu": "Tuuti rekk", "Non": "Déedéet, taw rekk"}}
+PLAB = {"Français": {"Revenu": "💰 Gagner plus d’argent", "Eau": "💧 Économiser l’eau",
+                     "Sol": "🌍 Garder la terre en bonne santé", "Résilience": "☀️ Mieux résister aux années sèches"},
+        "Wolof": {"Revenu": "💰 Am xaalis", "Eau": "💧 Wattu ndox", "Sol": "🌍 Wattu suuf si",
+                  "Résilience": "☀️ Dëgër ci at yu wow"}}
+ERR = ("Nous n’arrivons pas à joindre les données de la NASA. Vérifiez votre connexion internet et réessayez "
+       "dans un instant.")
 
 
+def T(k):
+    return TXT[LANG][k]
+
+
+THR = 0.6  # une saison « réussit » si le rendement atteint 60 % du rendement possible
+
+
+def lab(c):
+    return f"{ICON[c]} {CROP_NAME[LANG][c]}"
+
+
+def month_season(m):
+    return ORDER[0] if 7 <= m <= 10 else ORDER[1] if (m >= 11 or m <= 2) else ORDER[2]
+
+
+# ---------------------------------------------------------------------------------------------
+# CLIMAT NASA POWER ET BILAN D'EAU (inspiré de FAO-56 / FAO-33) + EFFET DE LA TEMPÉRATURE
+# ---------------------------------------------------------------------------------------------
 def ra_mm(lat, doy):
-    """Rayonnement extraterrestre (mm/j équivalent), FAO-56 éq. 21."""
     phi = math.radians(lat)
     dr = 1 + 0.033 * math.cos(2 * math.pi * doy / 365)
     d = 0.409 * math.sin(2 * math.pi * doy / 365 - 1.39)
     ws = math.acos(max(-1, min(1, -math.tan(phi) * math.tan(d))))
-    ra = (24 * 60 / math.pi) * 0.0820 * dr * (ws * math.sin(phi) * math.sin(d)
-                                              + math.cos(phi) * math.cos(d) * math.sin(ws))
+    ra = (24 * 60 / math.pi) * 0.0820 * dr * (ws * math.sin(phi) * math.sin(d) + math.cos(phi) * math.cos(d) * math.sin(ws))
     return ra / 2.45
 
 
-def _fetch_year(lat, lon, y):
-    r = requests.get(
-        "https://power.larc.nasa.gov/api/temporal/daily/point",
-        params=dict(parameters="PRECTOTCORR,T2M_MAX,T2M_MIN", community="AG", latitude=lat,
-                    longitude=lon, start=f"{y}0601", end=f"{y}1130", format="JSON"), timeout=60)
-    r.raise_for_status()
-    df = pd.DataFrame(r.json()["properties"]["parameter"]).replace(-999, float("nan"))
+POWER_URL = "https://power.larc.nasa.gov/api/temporal/daily/point"
+DATA_FILE = pathlib.Path(__file__).resolve().parent / "data" / "niayes_power.csv"  # copie locale (voir telecharger_donnees.py)
+POWER_END = "20260310"
+
+
+def _get(params, tries=4):
+    """Requête NASA POWER avec nouvelles tentatives : l'API limite les requêtes répétées et rapides."""
+    last = None
+    for k in range(tries):
+        try:
+            r = requests.get(POWER_URL, params=params, timeout=120)
+            if r.status_code in (429, 500, 502, 503, 504):
+                raise requests.HTTPError(f"HTTP {r.status_code}")
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            last = e
+            time.sleep(3 * (k + 1))
+    raise last
+
+
+def _to_df(js):
+    df = pd.DataFrame(js["properties"]["parameter"]).replace(-999, float("nan"))
     df.index = pd.to_datetime(df.index, format="%Y%m%d")
-    df["rain"] = df["PRECTOTCORR"].fillna(0)
-    df[["T2M_MAX", "T2M_MIN"]] = df[["T2M_MAX", "T2M_MIN"]].interpolate().bfill().ffill()
-    tmean = (df["T2M_MAX"] + df["T2M_MIN"]) / 2
-    ra = np.array([ra_mm(lat, d) for d in df.index.dayofyear])
-    df["et0"] = (0.0023 * (tmean + 17.8) * (df["T2M_MAX"] - df["T2M_MIN"]).clip(lower=0) ** 0.5 * ra).clip(lower=0)
-    return y, df[["rain", "et0"]]
+    return df[["PRECTOTCORR", "T2M_MAX", "T2M_MIN"]]
 
 
-@st.cache_data(ttl=86400 * 7, show_spinner="Téléchargement de 20 ans de climat NASA POWER (première fois seulement)…")
-def nasa_daily20(lat, lon):
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        return dict(ex.map(lambda y: _fetch_year(lat, lon, y), YEARS))
+def power_daily(lat, lon):
+    """Pluie et températures journalières 2006-2026 : fichier local s'il existe, sinon UNE requête NASA."""
+    if DATA_FILE.exists():
+        return pd.read_csv(DATA_FILE, index_col=0, parse_dates=True)
+    base = dict(parameters="PRECTOTCORR,T2M_MAX,T2M_MIN", community="AG", latitude=lat, longitude=lon, format="JSON")
+    try:
+        df = _to_df(_get(dict(base, start="20060101", end=POWER_END)))
+    except Exception:  # repli : une requête par an, espacées
+        parts = []
+        for y in range(2006, 2027):
+            parts.append(_to_df(_get(dict(base, start=f"{y}0101", end=f"{y}1231" if y < 2026 else POWER_END))))
+            time.sleep(1.5)
+        df = pd.concat(parts)
+    try:
+        DATA_FILE.parent.mkdir(exist_ok=True)
+        df.to_csv(DATA_FILE)
+    except Exception:
+        pass
+    return df
 
 
-def simulate(wx, crop, taw_m, irr, plant_off):
-    """Rendement relatif (0-1) d'une culture pour une saison : 1 - Ky * (1 - ETa/ETc)."""
-    L, k1, k2, k3, zr, ky = CROP_FAO[crop]
-    taw = taw_m * zr; raw = 0.5 * taw
-    dep = 0.9 * taw                      # sol sec au 1er juin
-    irr_left = 250.0 if irr else 0.0     # même hypothèse que le score d'eau : +250 mm
-    etc_sum = eta_sum = 0.0
-    for i, (rain, et0) in enumerate(zip(wx["rain"].to_numpy(), wx["et0"].to_numpy())):
-        if i >= plant_off + L:
-            break
-        if i < plant_off:
-            kc = 0.2                     # jachère
-        else:
-            t = (i - plant_off) / L
-            kc = k1 if t < .2 else k1 + (k2 - k1) * (t - .2) / .3 if t < .5 else k2 if t < .8 else k2 + (k3 - k2) * (t - .8) / .2
-            if irr_left > 0 and dep > raw:
-                a = min(irr_left, 20.0, dep); dep -= a; irr_left -= a
-        ks = 1.0 if dep <= raw else max(0.0, (taw - dep) / (taw - raw))
-        etc = kc * et0; eta = ks * etc
-        dep = min(taw, max(0.0, dep - rain + eta))
-        if i >= plant_off:
-            etc_sum += etc; eta_sum += eta
-    ratio = eta_sum / etc_sum if etc_sum else 0.0
-    return max(0.0, 1 - ky * (1 - ratio))
-
-
-@st.cache_data(ttl=86400)
-def rel_yields(lat, lon, sol, irr, off):
-    wx = nasa_daily20(lat, lon)
-    return pd.DataFrame({c: [simulate(wx[y], c, TAW_M[sol], irr, off) for y in YEARS] for c in CROP_FAO}, index=YEARS)
-
-
-def replay(Y, seq, thr):
-    """Rejoue la rotation sur chaque cycle de 3 saisons consécutives (2006-08, 2007-09, ...)."""
-    rows = []
-    for s0 in YEARS[:-2]:
-        vals = [float(Y.loc[s0 + i, c]) for i, c in enumerate(seq)]
-        j = int(np.argmin(vals))
-        rows.append(dict(start=s0, min=min(vals), mean=sum(vals) / 3, worst_crop=seq[j],
-                         worst_year=s0 + j, held=min(vals) >= thr))
-    return pd.DataFrame(rows).set_index("start")
-
-
-def score(seq, last, water, sf):
-    fam = [CROPS[last][0]] + [CROPS[c][0] for c in seq]
-    w = dr = inc = n = org = pen = 0
-    for i, c in enumerate(seq):
-        _, need, nn, d, rev, o = CROPS[c]
-        ok = water >= need
-        w += min(1, water / need); dr += d * (.9 if ok else 1) + (.1 if ok else 0)
-        inc += rev * min(1, water / need + .15); n += nn; org += o
-        pen += fam[i] == fam[i + 1]
-    div = len(set(fam[1:]))
-    w_use = 1 - sum(CROPS[c][1] for c in seq) / 1800
-    return dict(
-        Eau=max(0, min(1, w / 3 * .6 + w_use * .4 + .1)),
-        Sol=max(0, min(1, .35 + n / 3 * .3 + org / 3 * .25 + (div - 1) * .1 - pen * .3)) * sf,
-        Revenu=min(1, inc / 3), Résilience=min(1, dr / 3), pen=pen, div=div, n=n)
-
-
-@st.cache_data(ttl=86400, show_spinner="Analyse du sol (SoilGrids)…")
-def soilgrids(lat, lon):
-    """Texture du sol (0-30 cm) via SoilGrids / ISRIC. Retourne sable, limon, argile en %."""
-    r = requests.get("https://rest.isric.org/soilgrids/v2.0/properties/query", params=[
-        ("lon", lon), ("lat", lat), ("property", "sand"), ("property", "silt"), ("property", "clay"),
-        ("depth", "0-5cm"), ("depth", "5-15cm"), ("depth", "15-30cm"), ("value", "mean")], timeout=60)
-    r.raise_for_status()
-    return parse_soilgrids(r.json())
-
-
-def parse_soilgrids(js):
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def season_weather(lat, lon):
+    d = power_daily(lat, lon).copy()
+    d["rain"] = d["PRECTOTCORR"].fillna(0)
+    d[["T2M_MAX", "T2M_MIN"]] = d[["T2M_MAX", "T2M_MIN"]].interpolate().bfill().ffill()
+    d["tmean"] = (d["T2M_MAX"] + d["T2M_MIN"]) / 2
+    ra = {k: ra_mm(lat, k) for k in range(1, 367)}
+    d["et0"] = (0.0023 * (d["tmean"] + 17.8) * (d["T2M_MAX"] - d["T2M_MIN"]).clip(lower=0) ** 0.5
+                * d.index.dayofyear.map(ra).to_numpy()).clip(lower=0)
     out = {}
-    for layer in js["properties"]["layers"]:
-        d = layer["unit_measure"].get("d_factor", 10) or 10
-        vals = [x["values"]["mean"] for x in layer["depths"] if x["values"].get("mean") is not None]
-        out[layer["name"]] = sum(vals) / len(vals) / d  # g/kg -> %
+    for sname, sp in SEASONS.items():
+        (m1, d1), (m2, d2) = sp["start"], sp["end"]
+        for y in YEARS:
+            sub = d.loc[pd.Timestamp(y, m1, d1):pd.Timestamp(y + sp["yoff"], m2, d2), ["rain", "et0", "tmean"]]
+            if len(sub) < 100:
+                raise ValueError(f"données NASA incomplètes pour {sname} {y}")
+            out[(sname, y)] = sub
     return out
 
 
-def texture_class(t):
-    """Regroupe la texture en 3 classes utilisées par le modèle."""
-    if t["clay"] >= 35: return "Argileux"
-    if t["sand"] >= 70 and t["clay"] < 15: return "Sableux"
-    return "Sablo-argileux"
+def tfac(t, p):
+    a, b, c, d = p
+    return max(0.0, min(1.0, (t - a) / (b - a), (d - t) / (d - c)))
 
 
-BBOX = (12.2, 16.8, -17.6, -11.3)  # lat min/max, lon min/max : Sénégal (approx.)
-
-
-def nearest_zone(lat, lon):
-    """Zone agro-écologique la plus proche (sol, valeurs de repli)."""
-    return min(ZONES, key=lambda z: (ZONES[z][0] - lat) ** 2 + (ZONES[z][1] - lon) ** 2)
-
-
-st.title("🌱 YAXANAL SUNU MBAAYE – Votre Assistant Agricole ")
-st.caption("Observations NASA (POWER, MODIS) + sol local + priorités de l’agriculteur → rotations sur 3 saisons")
-
-with st.sidebar:
-    mode = st.radio("Localisation", ["Zone prédéfinie", "Cliquer sur la carte"])
-    if mode == "Zone prédéfinie":
-        zone = st.selectbox("Zone", list(ZONES), key="zone")
-        lat, lon, sols, fb = ZONES[zone]
-    else:
-        base = ZONES[st.session_state.get("zone", list(ZONES)[0])]
-        lat, lon = st.session_state.get("pt", (base[0], base[1]))
-        zone = nearest_zone(lat, lon)
-        sols, fb = ZONES[zone][2], ZONES[zone][3]
-        st.caption(f"📍 {lat:.3f}, {lon:.3f} · zone la plus proche : {zone}")
-    auto_sol = st.checkbox("Détecter le sol (SoilGrids)", value=True)
-    sol = None
-    if auto_sol:
-        try:
-            tex = soilgrids(round(lat, 3), round(lon, 3))
-            sol = texture_class(tex)
-            st.caption(f"🧪 Sol détecté : **{sol}** (sable {tex['sand']:.0f} %, "
-                       f"limon {tex['silt']:.0f} %, argile {tex['clay']:.0f} %)")
-        except Exception as e:
-            st.warning(f"SoilGrids indisponible ({type(e).__name__}) : choisissez le sol à la main.")
-    if sol is None:
-        sol = st.selectbox("Type de sol", sols)
-    last = st.selectbox("Dernière culture", list(CROPS))
-    irr = st.checkbox("Irrigation disponible")
-    clim = st.slider("Scénario pluie (%)", -40, 20, 0)
-    st.subheader("Priorités")
-    W = {k: st.slider(k, 0, 10, v) for k, v in
-         {"Eau": 7, "Sol": 8, "Revenu": 5, "Résilience": 7}.items()}
-
-st.subheader("Localisez votre parcelle")
-fmap = folium.Map(location=[lat, lon], zoom_start=7 if mode == "Cliquer sur la carte" else 6,
-                  tiles="OpenStreetMap")
-for zn, (zlat, zlon, *_r) in ZONES.items():
-    folium.CircleMarker([zlat, zlon], radius=5, color="#888", fill=True, tooltip=zn).add_to(fmap)
-folium.Marker([lat, lon], tooltip="Parcelle analysée", icon=folium.Icon(color="green", icon="leaf")).add_to(fmap)
-out = st_folium(fmap, height=360, use_container_width=True, returned_objects=["last_clicked"], key="map")
-click = (out or {}).get("last_clicked")
-if click and mode == "Cliquer sur la carte":
-    new_pt = (round(click["lat"], 3), round(click["lng"], 3))
-    fresh = new_pt != st.session_state.get("last_click")  # n'alerter qu'au moment du clic
-    st.session_state["last_click"] = new_pt
-    if not (BBOX[0] <= new_pt[0] <= BBOX[1] and BBOX[2] <= new_pt[1] <= BBOX[3]):
-        if fresh:
-            st.warning("Point hors du Sénégal ignoré : l’analyse reste sur le dernier point valide.")
-    elif new_pt != st.session_state.get("pt"):
-        st.session_state["pt"] = new_pt
-        st.rerun()
-elif mode == "Zone prédéfinie":
-    st.caption("Passez en mode « Cliquer sur la carte » (barre latérale) pour choisir une parcelle précise.")
-
-try:
-    m, detail = nasa_climato(lat, lon)
-    src = "NASA POWER (moyenne saisons 2023-2025, juin-octobre)"
-except Exception as e:
-    m = dict(rain=fb[0], temp=fb[1], sm=fb[2]); detail = None
-    src = f"valeurs de repli (API NASA indisponible : {type(e).__name__})"
-
-try:
-    ndvi_ts, ndvi_yr = nasa_ndvi(lat, lon)
-    ndvi_last, ndvi_norm = float(ndvi_yr.iloc[-1]), float(ndvi_yr.mean())
-    src_n = "NASA MODIS MOD13Q1 (via ORNL DAAC)"
-except Exception as e:
-    ndvi_ts = ndvi_yr = None
-    ndvi_last = ndvi_norm = fb[3]
-    src_n = f"valeur de repli (API MODIS indisponible : {type(e).__name__})"
-
-# Anomalie de végétation : < 1 = végétation en retard sur la normale -> stress hydrique supposé
-anom = ndvi_last / ndvi_norm if ndvi_norm else 1.0
-stress = min(1.0, max(.6, anom / .95))  # tolérance de 5 % avant de pénaliser
-
-rain = m["rain"] * (1 + clim / 100)
-water_raw = rain + (250 if irr else 0)
-water = water_raw * stress
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Pluie saison (mm)", round(rain)); c2.metric("Température (°C)", round(m["temp"], 1))
-c3.metric("Humidité racinaire", f"{m['sm']:.2f}")
-c4.metric("NDVI (dernière saison)", round(ndvi_last, 2), f"{(anom - 1) * 100:+.0f} % vs normale")
-c5.metric("Eau utile (mm)", round(water), f"{round(water - water_raw)} mm (stress NDVI)" if stress < 1 else None)
-st.caption(f"Sources : {src} · {src_n}")
-if stress < 1:
-    st.warning("Végétation en retard sur la normale : un stress hydrique est supposé, "
-               "l’eau utile est réduite et les cultures gourmandes en eau sont pénalisées.")
-if ndvi_ts is not None:
-    with st.expander("Courbe NDVI saison des pluies (MODIS, 250 m)"):
-        st.line_chart(ndvi_ts)
-if detail is not None:
-    st.dataframe(detail.round(2).rename(index=lambda i: 2023 + i, columns={"rain": "Pluie (mm)", "temp": "Température (°C)", "sm": "Humidité racinaire"}), use_container_width=False)
-
-tot = sum(W.values()) or 1
-res, seen, top_rots = [], set(), []
-for s in itertools.product(CROPS, repeat=3):
-    sc = score(s, last, water, SOL_F[sol])
-    g = sum(sc[k] * W[k] for k in W) / tot
-    res.append((g, s, sc))
-res.sort(key=lambda r: -r[0])
-st.subheader("Rotations recommandées")
-shown = 0
-for g, s, sc in res:
-    key = tuple(sorted(s))
-    if key in seen: continue
-    seen.add(key); shown += 1; top_rots.append(s)
-    with st.container(border=True):
-        st.markdown(f"**Après {last} → " + " › ".join(f"S{i+1} : {c}" for i, c in enumerate(s)) + f"**  —  score **{round(g*100)}**")
-        cols = st.columns(4)
-        for col, k in zip(cols, W): col.progress(float(sc[k]), text=f"{k} {round(sc[k]*100)}%")
-        notes = []
-        if sc["n"] > .8: notes.append("légumineuses : restauration de l’azote")
-        if sc["div"] == 3: notes.append("3 familles : moins de maladies")
-        if sc["pen"]: notes.append("⚠ même famille consécutive")
-        lourds = [c for c in s if CROPS[c][1] > water]
-        if lourds: notes.append("⚠ eau insuffisante pour " + ", ".join(lourds))
-        st.caption(" · ".join(notes))
-    if shown == 5: break
-
-# ---------------------------------------------------------------------------
-st.divider()
-st.header("Rejouer ma rotation sur 20 ans de climat NASA")
-st.caption("Choisissez ou ajustez trois rotations (par défaut : les 3 premières du classement). L'outil les rejoue "
-           "sur chaque cycle de 3 saisons consécutives (2006-2025) et compte combien auraient tenu.")
-labels = ["Rotation A", "Rotation B", "Rotation C"]
-seqs = []
-for k, col in enumerate(st.columns(3)):
-    with col:
-        st.markdown(f"**{labels[k]}**")
-        seqs.append([st.selectbox(f"Saison {j + 1}", list(CROPS), index=list(CROPS).index(top_rots[k][j]),
-                                  key=f"rot{k}_{j}") for j in range(3)])
-p1, p2 = st.columns(2)
-plant = p1.select_slider("Date de semis", list(PLANT_OFFSET), value="1er juillet")
-thr = p2.slider("Une saison « tient » si le rendement relatif est d'au moins", 0.3, 0.9, 0.6, 0.05,
-                help="Rendement relatif = rendement obtenu / rendement potentiel sans stress hydrique.")
-if st.button("▶ Lancer le rejeu sur 20 ans", type="primary"):
-    st.session_state["replay_on"] = True
-if st.session_state.get("replay_on"):
-    try:
-        Y = rel_yields(round(lat, 2), round(lon, 2), sol, bool(irr), PLANT_OFFSET[plant])
-        R = [replay(Y, sq, thr) for sq in seqs]
-        n = len(R[0])
-        st.subheader("Résultat")
-        for k, col in enumerate(st.columns(3)):
-            r = R[k]; w = r["min"].idxmin()
-            with col:
-                st.markdown(f"**{labels[k]}** : " + " › ".join(seqs[k]))
-                st.metric("Cycles de 3 ans qui tiennent", f"{int(r['held'].sum())} / {n}")
-                st.metric("Rendement relatif moyen", f"{r['mean'].mean():.0%}")
-                st.caption(f"Pire cycle : {w}–{w + 2} ({r['min'].min():.0%})")
-        st.line_chart(pd.DataFrame({labels[k]: R[k]["min"] for k in range(3)}).rename_axis("Cycle commençant en"))
-        st.caption("Courbe : rendement relatif de la saison la plus touchée de chaque cycle de 3 ans (plus haut = plus sûr).")
-        st.markdown("**Pourquoi la rotation A échoue, quand elle échoue**")
-        fails = R[0][~R[0]["held"]]
-        if fails.empty:
-            st.success("Aucun cycle sous le seuil sur 2006-2025.")
+def simulate_season(df, crop, budget, season):
+    """Rendement relatif (0-1) = effet de l'eau (FAO-33) x effet de la température."""
+    L, k1, k2, k3, zr, ky = CROP_FAO[crop]; sp = SEASONS[season]; plant = sp["plant"]
+    taw = TAW * zr; raw = .5 * taw; dep = sp["dep0"] * taw; left = budget
+    rain, et0, tm = df["rain"].to_numpy(), df["et0"].to_numpy(), df["tmean"].to_numpy()
+    etc_sum = eta_sum = 0.0; tf = []
+    for i in range(len(rain)):
+        if i >= plant + L:
+            break
+        if i < plant:
+            kc = .2
         else:
-            for s0, row in fails.sort_values("min").head(6).iterrows():
-                st.write(f"• {s0}–{s0 + 2} : {row['worst_crop']} en {row['worst_year']} → "
-                         f"{row['min']:.0%} du rendement potentiel (stress hydrique).")
-        with st.expander("Rendement relatif par culture et par année"):
-            st.dataframe((Y * 100).round(0).astype(int).rename_axis("Année"))
-        st.caption("Méthode : bilan hydrique journalier inspiré de FAO-56 (ET0 de Hargreaves-Samani, Kc, Ks), réponse du "
-                   "rendement à l'eau de FAO-33. Pluie et températures : NASA POWER, juin à novembre. Coefficients "
-                   "approximatifs, non validés sur le terrain ; POWER a une résolution d'environ 50 km.")
+            t = (i - plant) / L
+            kc = k1 if t < .2 else k1 + (k2 - k1) * (t - .2) / .3 if t < .5 else k2 if t < .8 else k2 + (k3 - k2) * (t - .8) / .2
+            if left > 0 and dep > raw:
+                a = min(left, 20.0, dep); dep -= a; left -= a
+        ks = 1.0 if dep <= raw else max(0.0, (taw - dep) / (taw - raw))
+        etc = kc * et0[i]; eta = ks * etc
+        dep = min(taw, max(0.0, dep - rain[i] + eta))
+        if i >= plant:
+            etc_sum += etc; eta_sum += eta; tf.append(tfac(tm[i], CROP_T[crop]))
+    ratio = eta_sum / etc_sum if etc_sum else 0.0
+    return max(0.0, 1 - ky * (1 - ratio)) * (sum(tf) / len(tf) if tf else 0.0)
+
+
+@st.cache_data(ttl=86400)
+def season_yields(lat, lon, budget):
+    wx = season_weather(lat, lon)
+    return {s: pd.DataFrame({c: [simulate_season(wx[(s, y)], c, budget, s) for y in YEARS] for c in MY}, index=YEARS)
+            for s in ORDER}
+
+
+# ---------------------------------------------------------------------------------------------
+# CONSEILS
+# ---------------------------------------------------------------------------------------------
+def suitability(Ys, thr=THR):
+    return {(s, c): dict(mean=float(Ys[s][c].mean()), ok=int((Ys[s][c] >= thr).sum()), n=len(Ys[s]))
+            for s in ORDER for c in MY}
+
+
+def crop_score(c, s, suit, prio):
+    m = suit[(s, c)]; rel = m["ok"] / m["n"]; I = INFO[c]
+    p = {"Revenu": I["inc"], "Eau": 1 - I["need"] / 700, "Sol": ((I["n"] + 1) / 2 + I["org"]) / 2, "Résilience": rel}[prio]
+    return .6 * m["mean"] + .4 * p
+
+
+def replay_plan(Ys, seq, start_idx, thr=THR):
+    """Rejoue 3 saisons consécutives sur chaque année passée : tient si chaque saison atteint le seuil."""
+    ok = n = 0
+    for C in YEARS:
+        vals = []
+        for k in range(3):
+            t = 3 * C + start_idx + k; idx = t % 3; cal = t // 3 + (1 if idx == 2 else 0)
+            if cal < YEARS[0] or cal > YEARS[-1]:
+                break
+            vals.append(float(Ys[ORDER[idx]].loc[cal, seq[k]]))
+        else:
+            n += 1; ok += min(vals) >= thr
+    return ok, n
+
+
+def reasons(seq, seasons, budget):
+    out = []
+    for c, s in zip(seq, seasons):
+        if c == "Oignon":
+            out.append("✔ L’oignon préfère la saison fraîche pour bien grossir." if s == "Saison fraîche"
+                       else "⚠ L’oignon grossit mal quand il fait chaud.")
+        if c == "Piment":
+            out.append("⚠ En hivernage, le piment craint l’excès d’eau et les maladies." if s == "Hivernage"
+                       else "✔ Le piment pousse bien quand il fait 20 à 30 °C.")
+    if "Niébé" in seq:
+        out.append("✔ Le niébé nourrit la terre en azote : moins d’engrais à acheter.")
+    if len(set(seq)) == 3:
+        out.append("✔ Trois cultures différentes : moins de maladies et d’insectes.")
+    elif any(seq[i] == seq[i + 1] for i in range(2)):
+        out.append("⚠ Deux fois la même culture de suite : la terre se fatigue.")
+    if budget <= 0 and any(s != "Hivernage" for s in seasons):
+        out.append("⚠ Sans eau pour arroser, il est très difficile de cultiver hors de l’hivernage (il ne pleut presque pas).")
+    return list(dict.fromkeys(out))
+
+
+def build_plans(Ys, suit, start_idx, last, prio, budget):
+    seasons = [ORDER[(start_idx + k) % 3] for k in range(3)]
+    cand = []
+    for seq in itertools.product(MY, repeat=3):
+        sc = sum(crop_score(c, s, suit, prio) for c, s in zip(seq, seasons)) / 3
+        pen = .15 * sum(a == b for a, b in zip((last,) + seq[:-1], seq))
+        cand.append((sc - pen, seq))
+    cand.sort(key=lambda r: -r[0])
+    props = [s for _, s in cand if s != (last,) * 3][:2]
+    plans = []
+    for title, seq in [("Ce que vous faites aujourd’hui", (last,) * 3), ("Notre conseil n° 1", props[0]),
+                       ("Notre conseil n° 2", props[1])]:
+        ok, n = replay_plan(Ys, seq, start_idx)
+        plans.append(dict(title=title, seq=seq, seasons=seasons, ok=ok, n=n, reasons=reasons(seq, seasons, budget)))
+    return plans
+
+
+def badge(ok, n):
+    r = ok / n if n else 0
+    return ("ok", T("ok")) if r >= .8 else ("mid", T("mid")) if r >= .5 else ("bad", T("bad"))
+
+
+# ---------------------------------------------------------------------------------------------
+# ASSISTANTE EN WOLOF (Claude, via l'API Anthropic) : appuyée sur les résultats calculés ci-dessus
+# ---------------------------------------------------------------------------------------------
+MODEL = "claude-sonnet-5-5"
+SYSTEM = """Tu es « Yaxanal », une assistante agricole bienveillante qui aide des producteurs des Niayes (Sénégal).
+Réponds TOUJOURS en wolof (orthographe latine standard), avec des phrases très courtes et simples, comme on parle à un voisin agriculteur. Pour les mots techniques sans équivalent courant, garde le mot français (comme le font les locuteurs wolof) plutôt que d'inventer un mot.
+Appuie-toi UNIQUEMENT sur les données du CONTEXTE ci-dessous. N'invente jamais de prix, de doses de produits chimiques, de variétés ni de dates précises. Si la question sort du contexte (maladies, pesticides, marché), dis honnêtement que tu n'en es pas sûre et invite à demander au conseiller agricole.
+Rappelle de temps en temps que ce conseil est une aide et ne remplace pas le conseiller agricole. Si tu hésites sur un mot wolof, dis-le et ajoute le mot français entre parenthèses.
+Maximum 5 phrases, sans tableau ni jargon."""
+
+
+def get_client():
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        try:
+            key = st.secrets["ANTHROPIC_API_KEY"]
+        except Exception:
+            key = None
+    if not key:
+        return None
+    try:
+        import anthropic
+        return anthropic.Anthropic(api_key=key)
+    except Exception:
+        return None
+
+
+def ask_assistant(history, context, client):
+    resp = client.messages.create(model=MODEL, max_tokens=600, system=SYSTEM + "\n\nCONTEXTE :\n" + context,
+                                  messages=history[-8:])
+    return "".join(getattr(b, "text", "") for b in resp.content).strip() or "…"
+
+
+def build_context(sidx, usual, water_key, prio_key, suit, plans):
+    rows = [f"Zone : Niayes. Saison choisie : {SEASONS[ORDER[sidx]]['label']}. Culture habituelle : {usual}.",
+            f"Eau pour arroser : {WATER_FR[water_key]}. Priorité du producteur : {PRIO_FR[prio_key]}."]
+    for s_ in ORDER:
+        rk = sorted(MY, key=lambda c: -crop_score(c, s_, suit, prio_key))
+        rows.append(f"{SEASONS[s_]['label']} : culture prioritaire {rk[0]} (réussie {suit[(s_, rk[0])]['ok']} années sur "
+                    f"{suit[(s_, rk[0])]['n']}) ; autres : " + ", ".join(
+                        f"{c} ({suit[(s_, c)]['ok']}/{suit[(s_, c)]['n']})" for c in rk[1:]))
+    for p in plans:
+        rows.append(f"{p['title']} : " + " puis ".join(f"{c} ({SEASONS[s_]['label']})" for c, s_ in zip(p["seq"], p["seasons"]))
+                    + f" ; aurait bien marché {p['ok']} fois sur {p['n']} ; points : " + " ".join(p["reasons"]))
+    return "\n".join(rows)
+
+
+# ---------------------------------------------------------------------------------------------
+# INTERFACE
+# ---------------------------------------------------------------------------------------------
+st.markdown(f'<div class="hero"><div class="t">🌱 Yaxanal Sunu Mbaaye</div><div class="s">{T("sub")}</div></div>',
+            unsafe_allow_html=True)
+now_idx = ORDER.index(month_season(dt.date.today().month))
+st.markdown(f'<div class="chip">{T("chip").format(s=SNAME[LANG][ORDER[now_idx]])}</div>', unsafe_allow_html=True)
+
+with st.form("questions"):
+    sidx = st.radio(T("q1"), range(3), index=now_idx, format_func=lambda i: SLAB[LANG][ORDER[i]], key="q_season")
+    usual = st.radio(T("q2"), MY, format_func=lab, horizontal=True, key="q_crop")
+    water = st.radio(T("q3"), list(WATER_BUDGET), format_func=lambda k: WLAB[LANG][k], key="q_water")
+    prio = st.radio(T("q4"), PRIO_KEYS, format_func=lambda k: PLAB[LANG][k], key="q_prio")
+    go = st.form_submit_button(T("btn"), type="primary")
+if go:
+    st.session_state["inp"] = (sidx, usual, water, prio)
+    st.session_state["chat"] = []
+
+if "inp" in st.session_state:
+    sidx, usual, water, prio = st.session_state["inp"]
+    budget = WATER_BUDGET[water]
+    try:
+        with st.spinner("Nous consultons 20 ans de données de la NASA… (la première fois, cela peut durer une minute)"):
+            lat, lon = round(NIAYES[0], 2), round(NIAYES[1], 2)
+            Ys = season_yields(lat, lon, budget)
+        suit = suitability(Ys)
+        plans = build_plans(Ys, suit, sidx, usual, prio, budget)
     except Exception as e:
-        st.error(f"Rejeu impossible ({type(e).__name__}) : les données NASA POWER n'ont pas pu être téléchargées. Réessayez.")
+        st.error(ERR)
+        with st.expander("Détails pour l’équipe technique"):
+            st.code(f"{type(e).__name__}: {e}")
+            st.caption("Astuce : lancez « python telecharger_donnees.py » une fois pour enregistrer les données "
+                       "NASA dans le dossier data/ ; l’app les lira ensuite sans internet.")
+        st.stop()
+    titles = [T("today"), T("c1"), T("c2")]
+
+    st.header(T("h1"))
+
+    def season_card(s_):
+        ranked = sorted(MY, key=lambda c: -crop_score(c, s_, suit, prio))
+        best = ranked[0]; m = suit[(s_, best)]; cls, t = badge(m["ok"], m["n"])
+        oth = " &nbsp;·&nbsp; ".join(f"{lab(c)} {badge(suit[(s_, c)]['ok'], suit[(s_, c)]['n'])[1].split(' ')[0]} "
+                                     f"{suit[(s_, c)]['ok']}/{suit[(s_, c)]['n']}" for c in ranked[1:])
+        st.markdown(f'<div class="card"><div class="ch">{SLAB[LANG][s_]}</div>'
+                    f'<div class="big">🥇 {T("prio")} : {lab(best)}</div>'
+                    f'<div class="badge {cls}">{t} · {T("wins").format(ok=m["ok"], n=m["n"])}</div>'
+                    f'<div class="oth">{oth}</div></div>', unsafe_allow_html=True)
+    season_card(ORDER[sidx])
+    with st.expander(T("others")):
+        for s_ in ORDER:
+            if s_ != ORDER[sidx]:
+                season_card(s_)
+
+    st.header(T("h2"))
+    for k, p in enumerate(plans):
+        cls, t = badge(p["ok"], p["n"])
+        tiles = "".join(f'<div class="tile"><div class="sn">{SSHORT[LANG][s_]}</div><div class="ic">{ICON[c]}</div>'
+                        f'<div class="cn">{CROP_NAME[LANG][c]}</div></div>' for c, s_ in zip(p["seq"], p["seasons"]))
+        why = "".join(f"<li>{r}</li>" for r in p["reasons"])
+        note = f'<div class="note">{T("assume")}</div>' if k == 0 else ""
+        ribbon = f'<span class="ribbon">{T("rec")}</span>' if k == 1 else ""
+        st.markdown(f'<div class="card {"rec" if k == 1 else ""}"><div class="ch">{titles[k]}{ribbon}</div>{note}'
+                    f'<div class="tiles">{tiles}</div>'
+                    f'<div class="badge {cls}">{t} · {T("pwins").format(ok=p["ok"], n=p["n"])}</div>'
+                    f'<ul class="why">{why}</ul></div>', unsafe_allow_html=True)
+    st.caption(T("disc"))
+
+    # --- assistante en wolof ---
+    st.header(T("ask_h"))
+    history = st.session_state.setdefault("chat", [])
+    b1, b2 = st.columns(2)
+    pending = None
+    if b1.button(T("q_explain"), use_container_width=True):
+        pending = "Explique-moi mon conseil, simplement."
+    if b2.button(T("q_why"), use_container_width=True):
+        pending = "Pourquoi ces cultures pour ces saisons ?"
+    q = st.chat_input(T("ph")) or pending
+    if q:
+        history.append(dict(role="user", content=q))
+        client = get_client()
+        if client is None:
+            ans = ("L’assistante n’est pas encore activée : il manque la clé API Claude. Ajoutez-la dans la variable "
+                   "d’environnement ANTHROPIC_API_KEY ou dans le fichier .streamlit/secrets.toml, puis relancez l’application "
+                   "(étapes détaillées dans README_assistante.md).")
+        else:
+            try:
+                with st.spinner(T("wait")):
+                    ans = ask_assistant(history, build_context(sidx, usual, water, prio, suit, plans), client)
+            except Exception as e:
+                ans = f"L’assistante est momentanément indisponible ({type(e).__name__}). Réessayez dans un instant."
+        history.append(dict(role="assistant", content=ans))
+    for m in history:
+        with st.chat_message("user" if m["role"] == "user" else "assistant", avatar="🧑🏾‍🌾" if m["role"] == "user" else "🌱"):
+            st.write(m["content"])
+    st.caption("Les textes et réponses en wolof peuvent contenir des erreurs : faites-les relire par un locuteur. "
+               "L’assistante ne remplace pas le conseiller agricole.")
+    with st.expander(T("tech")):
+        st.markdown(
+            "- **Zone** : Niayes, point de référence 14.85, -17.20 ; sol sableux supposé ; semis au début de chaque saison (début juillet pour l’hivernage).\n"
+            "- **Données** : NASA POWER, pluie et températures journalières 2006-2025 (résolution d’environ 50 km).\n"
+            "- **Méthode** : bilan d’eau journalier inspiré de FAO-56 (évapotranspiration de Hargreaves-Samani), réponse du rendement à l’eau FAO-33, "
+            "multipliée par un effet de la température moyenne propre à chaque culture. Une saison « réussit » si le rendement atteint 60 % du rendement possible.\n"
+            "- **Limites** : coefficients des cultures et seuils de température = ordres de grandeur, **ceux du piment sont estimés** ; les maladies ne sont pas modélisées ; "
+            "rien n’est validé sur le terrain. « Assez d’eau » est supposé illimité, « un peu » = 150 mm par saison. Prix, maladies, érosion et dates de semis réelles ne sont pas pris en compte.")
+        for s_ in ORDER:
+            st.caption(f"{SEASONS[s_]['label']} : rendement relatif (% du rendement possible) par année")
+            st.dataframe((Ys[s_] * 100).round(0).astype(int).rename_axis("Année"))
